@@ -1,0 +1,16 @@
+langchain 
+langgraph
+langchain-community
+langchain-openai
+python-dotenv
+groq 
+pymongo
+agno
+streamlit
+python-dotenv
+groq 
+pandas
+python-multipart
+requests
+gspread
+oauth2client
