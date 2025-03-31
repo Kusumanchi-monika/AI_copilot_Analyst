@@ -2,6 +2,8 @@ from pymongo import MongoClient
 from dotenv import load_dotenv
 import os
 import streamlit as st
+import asyncio
+
 load_dotenv()
 
 uri = os.getenv("uri")
@@ -145,18 +147,15 @@ def run_agent():
 
     return agent
 
-with st.sidebar:
-    st.header("Sample Questions")
-    sample_question = st.selectbox(
-        "Choose a question:",
-        [
-            "How many calls did Priya Sharma make this week?",
-            "List all failed calls in the last 7 days.",
-            "What is the average call duration for completed calls?",
-            "Show me all call records",
-        ],
-    )
+def simulate_agno_response(prompt):
+    # Replace this with your actual API call to Agno
+    agent = run_agent()  #Calling it here it the fix so that agent will take instruction
+    response = agent.print_response(prompt, stream=True)
+    for char in response:
+        yield char
+        time.sleep(0.05)
 
+with st.sidebar:
     if mongo_connected:
         st.header("Database Info")
         db_name = st.selectbox("Select Database", client.list_database_names())
@@ -168,9 +167,19 @@ with st.sidebar:
                 st.error(f"Error listing collections: {e}")
     else:
         st.write("Not connected to MongoDB.")
+        st.header("Sample Questions")
+    sample_question = st.selectbox(
+        "Choose a question:",
+        [
+            "How many calls did Priya Sharma make this week?",
+            "List all failed calls in the last 7 days.",
+            "What is the average call duration for completed calls?",
+            "Show me all call records",
+        ],
+    )
 
 # Main App
-st.title("MongoDB Query Agent")
+st.title("AI Copilot to Analyze your data")
 
 # Initialize session state for conversation history
 if "messages" not in st.session_state:
@@ -192,13 +201,16 @@ if prompt := st.chat_input("Ask me anything about your data"):
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response = ""
-        agent = run_agent()  #Calling it here it the fix so that agent will take instruction
+        agent = run_agent()
+        # Generate response with error handling
+        with st.spinner("Analyzing your question..."):
+            result = agent.run(prompt)
+        print(result)
+        # Display assistant response
+        st.markdown(result.content)
+        
+        st.session_state.messages.append({"role": "assistant", "content":result.content })
 
-        # Stream the response from the agent
-        with st.spinner("Thinking..."):
-            for chunk in agent.print_response(prompt, stream=True):
-                full_response += chunk
-                message_placeholder.markdown(full_response + "▌")  # Add blinking cursor
-            message_placeholder.markdown(full_response)
 
-    st.session_state.messages.append({"role": "assistant", "content": full_response})
+
+
