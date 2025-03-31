@@ -9,6 +9,7 @@ from typing import List, Dict, Optional
 from pymongo.mongo_client import MongoClient
 from dotenv import load_dotenv
 import os
+import streamlit as st
 
 credentials_path = os.getenv("credentials_path")
 sheet_id =  os.getenv("sheet_id")
@@ -19,8 +20,32 @@ class MongoDBUtility(Toolkit):
     def __init__(self, uri=uri, db_name="Demo"):
         """Initialize MongoDB connection."""
         super().__init__(name="mongo_db_toolkit")
+        self.uri = os.getenv("uri")
+        print(f"MongoDBUtility __init__: URI from env: {self.uri}") # Debug: Show URI
+        try:
+            print("MongoDBUtility __init__: Trying to connect to MongoDB...")
+            self.client = MongoClient(self.uri)
+            print("MongoDBUtility __init__: MongoClient created.")
+
+            self.client.admin.command('ping')  # Check connection
+            print("MongoDBUtility __init__: Ping successful. MongoDB Connection Successful!")
+
+            self.db_name = self.uri.split("/")[-1].split("?")[0]
+            print(f"MongoDBUtility __init__: Database name extracted: {self.db_name}")
+
+            self.db = self.client[db_name]
+            print(f"MongoDBUtility __init__: Database object created: {self.db}")
+
+        except Exception as e:
+            print(f"MongoDBUtility __init__: ERROR Connecting to MongoDB: {e}")
+            self.client = None
+            self.db = None
+            self.db_name = None
+            st.error(f"MongoDB Connection Failed: {e}") #Showed in UI
+        self.uri = os.getenv("uri")  # Access URI from environment variable
         self.client = MongoClient(uri)
         self.db = self.client[db_name]
+        
         self.register(self.query_mongodb)
         self.register(self.list_collections)
         self.register(self.get_collection_schema)

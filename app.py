@@ -1,19 +1,21 @@
 from pymongo import MongoClient
 from dotenv import load_dotenv
 import os
-
+import streamlit as st
 load_dotenv()
 
 uri = os.getenv("uri")
 print(uri)
 
+# Initialize MongoDB client (do this once)
 try:
     client = MongoClient(uri)
-    # The ismaster command is used to check the connection
-    server_status = client.admin.command("ismaster")
-    print("MongoDB Connection Successful ✅")
+    client.admin.command('ping')  # Check connection
+    mongo_connected = True
+    st.success("Connected to MongoDB!")
 except Exception as e:
-    print("MongoDB Connection Failed ❌", e)
+    st.error(f"Failed to connect to MongoDB: {e}")
+    mongo_connected = False
 
 # List all databases
 print("Databases:", client.list_database_names())
@@ -33,9 +35,11 @@ from agno.agent import Agent, RunResponse
 from agno.models.openai import OpenAIChat
 from agno.tools.pandas import PandasTools
 from tools.tools import MongoDBUtility, Googletoolkit
+import streamlit as st
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 
 def run_agent():
 
@@ -139,6 +143,62 @@ def run_agent():
                 markdown=True,
     )
 
-    agent.print_response("List all failed calls in the last 7 days.", stream=True)
+    return agent
 
-run_agent()
+with st.sidebar:
+    st.header("Sample Questions")
+    sample_question = st.selectbox(
+        "Choose a question:",
+        [
+            "How many calls did Priya Sharma make this week?",
+            "List all failed calls in the last 7 days.",
+            "What is the average call duration for completed calls?",
+            "Show me all call records",
+        ],
+    )
+
+    if mongo_connected:
+        st.header("Database Info")
+        db_name = st.selectbox("Select Database", client.list_database_names())
+        if db_name:
+            try:
+                collections = client[db_name].list_collection_names()
+                st.write("Collections:", collections)
+            except Exception as e:
+                st.error(f"Error listing collections: {e}")
+    else:
+        st.write("Not connected to MongoDB.")
+
+# Main App
+st.title("MongoDB Query Agent")
+
+# Initialize session state for conversation history
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display existing messages
+for message in st.session_state.messages:
+    with st.chat_message(message["role"]):
+        st.markdown(message["content"])
+
+# Chat input
+if prompt := st.chat_input("Ask me anything about your data"):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    # Agent response
+
+    with st.chat_message("assistant"):
+        message_placeholder = st.empty()
+        full_response = ""
+        agent = run_agent()  #Calling it here it the fix so that agent will take instruction
+
+        # Stream the response from the agent
+        with st.spinner("Thinking..."):
+            for chunk in agent.print_response(prompt, stream=True):
+                full_response += chunk
+                message_placeholder.markdown(full_response + "▌")  # Add blinking cursor
+            message_placeholder.markdown(full_response)
+
+    st.session_state.messages.append({"role": "assistant", "content": full_response})
