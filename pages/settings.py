@@ -23,8 +23,12 @@ show_json = st.checkbox("Show Service Account JSON")
 if show_json:
     direct_json_input = st.text_area("Service Account JSON", "")
 else:
-    direct_json_input = st.text_input("Service Account JSON (Hidden)", "", type="password")
-
+    direct_json_input = st.text_input("Service Account JSON (Hidden)",os.getenv("direct_json_input") or "", type="password")
+    credentials_json = json.loads(direct_json_input)
+    credentials_path = os.path.join(os.getcwd(), "credentials.json")  # Save to main directory
+    with open(credentials_path, "w") as f:
+        json.dump(credentials_json, f, indent=4)
+        
 if st.button("Save Settings"):
     update_env_file("OPENAI_API_KEY", openai_api_key)
     update_env_file("uri", mongodb_uri)
