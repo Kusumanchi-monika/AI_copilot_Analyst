@@ -38,6 +38,7 @@ from agno.models.openai import OpenAIChat
 from agno.tools.pandas import PandasTools
 from tools.tools import MongoDBUtility, Googletoolkit
 import streamlit as st
+import requests
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -46,7 +47,14 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 def run_agent():
 
     uri = os.getenv("uri")
-    credentials_path = os.getenv("credentials_path")
+    credentials_path = "credentials.json"
+    # DROPBOX_URL = credentials_path
+    # LOCAL_CREDENTIALS_PATH = "/tmp/credentials.json"  # Temporary location
+
+    # # Download the credentials file from Dropbox
+    # response = requests.get(DROPBOX_URL)
+    # with open(LOCAL_CREDENTIALS_PATH, "wb") as f:
+    #     f.write(response.content)
     sheet_id =  os.getenv("sheet_id")
     client = MongoClient(uri)
 
