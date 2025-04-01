@@ -52,6 +52,18 @@ from io import StringIO
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+# --- Pricing (per 1 million tokens) ---
+# Please verify current pricing from OpenAI and Groq documentation
+MODEL_PRICING_PER_MILLION_TOKENS = {
+    "gpt-4o": {"input": 5.00, "output": 15.00},
+    # Assuming Groq is currently free or has negligible cost for this example model
+    "deepseek-r1-distill-llama-70b": {"input": 0.0, "output": 0.0},
+    # Add other models here if you use them
+}
+
+# Define the ID of the primary model whose pricing will be used for estimation
+# If usage details aren't broken down per model in the response.
+PRIMARY_MODEL_ID_FOR_COST = "gpt-4o"
 # Assuming ObjectId might be present from MongoDB results
 try:
     from bson import ObjectId
@@ -175,8 +187,6 @@ def run_agent():
 
     agent = Agent(
             model= OpenAIChat(id="gpt-4o",temperature=0),
-            # model=Claude(id="claude-3-7-sonnet-20250219", temperature=0),
-
             reasoning_model=Groq(id="deepseek-r1-distill-llama-70b", temperature=0),
 
             tools = [MongoDBUtility(),ThinkingTools(),PandasTools(), save_list_to_csv],
@@ -201,78 +211,49 @@ def run_agent():
 
                     4️ **Execute the Query:**
                     - If the query is a **count operation**, use `CountDocumentsTool`.
-                    - If retrieving multiple documents, use `FindDocumentsTool`and save in csv file using the tool `save_list_to_csv` ".
+                    - If retrieving multiple documents **and the user asks to list or save them**, use `FindDocumentsTool`.
                     - For summary statistics (e.g., average duration), use `AggregateDocumentsTool`.
-                
 
-                    4.5 **Save Results if  the user says list the records or what are the records or Listing/Saving Records:**
-                        - **If** the user's request implies listing or saving multiple records **and** you just used `FindDocumentsTool` which returned a list of documents (let's call this list `retrieved_data`):
-                            - **Determine the desired format:** Default to CSV unless the user explicitly asks for JSON (if you have a JSON save tool).
-                            - **Determine the filename:** If the user suggests a filename (e.g., "save it as failed_emails.csv"), use that. Otherwise, do not provide a filename to the tool (let it generate one).
-                            - **If saving as CSV:**
-                                - **Call the `save_list_to_csv` tool.**
-                -                - Pass the `retrieved_data` (the actual Python list object from `FindDocumentsTool`) to the `data_to_save` argument.
-                +                - Pass the `retrieved_data` (the actual Python list object from `FindDocumentsTool`) to the `data` argument.
-                                - If a specific filename was requested by the user, pass it to the `output_filename` argument. Otherwise, pass nothing for `output_filename`.
-                            # - (Add similar logic here if you also have a JSON saving tool)
-                            - **Crucially: Do not convert the `retrieved_data` list to a string** before passing it to the saving tool.
+                    4.5 **Handling `FindDocumentsTool` Results for Listing/Saving:**
+                        - **IF** you just successfully executed `FindDocumentsTool` because the user asked to list or see multiple records, **AND** that tool returned a list of documents (let's call the variable containing this list `retrieved_data_list`):
+                            - **THEN:** You **MUST** proceed to call the `save_list_to_csv` tool immediately in the next step.
+                            - **WHEN CALLING `save_list_to_csv`:**
+                                - You **MUST** provide the `retrieved_data_list` (the actual list object returned by `FindDocumentsTool`) as the value for the `data` argument. **Do NOT forget this argument.**
+                                - **Example:** If `FindDocumentsTool` returned `[{'field1': 'val1'}, {'field1': 'val2'}]`, the call should look like `save_list_to_csv(data=[{'field1': 'val1'}, {'field1': 'val2'}], output_filename='optional_name.csv')`.
+                                - **Filename:** If the user suggested a filename (e.g., "save as my_report.csv"), pass it to the `output_filename` argument. If no filename was mentioned, **do not include the `output_filename` argument at all** (let the tool generate one automatically).
+                            - **Do NOT try to convert the `retrieved_data_list` to a string or summarize it before passing it to `save_list_to_csv`. Pass the raw list object.**
 
-                5️ **Return a Clear and Concise Response:**
-                    - Show the query that you execuited in the mongodb database
-            -        - **If you saved data to a file (CSV or JSON), clearly state the filename and format** in your response, using the confirmation message returned by the saving tool.
-            +        - **If data was saved to a file, include the exact confirmation message returned by the saving tool** (e.g., "Successfully saved X records to Y.csv") in your final response to the user.
-                    - Format the output in readable JSON or tabular format for the user's view.
-                    - Provide a **brief explanation** of the result.
-
+                    5️ **Return a Clear and Concise Response:**
+                        - Show the query that you executed in the MongoDB database (if applicable, like for Find, Count, Aggregate).
+                        - **If data was saved to a file using `save_list_to_csv`**, **include the exact confirmation message string returned by that tool** in your final response to the user (e.g., "Successfully generated CSV data (50 records) named 'output_20240401_123456.csv'. The user can now download it.").
+                        - If `FindDocumentsTool` was used *without* saving (e.g., user asked "show me the first 5 failed calls"), present a small sample of the results directly in the response (e.g., as a markdown table or formatted list), but avoid showing excessively large lists. Mention how many total records were found if relevant.
+                        - For counts or single-value aggregations, provide a brief explanation of the result.
 
                     ---
-                    3. **Error Handling and Fallback:**
-                        - **Problem:** The agent currently doesn't gracefully handle errors when saving to Google Sheets.
-                        - **Solution:** Implement error handling with the Pandas DataFrame fallback *in the agent's logic*.   Because you can't directly modify the tool's code from inside the agent instructions, the agent needs to *react* to a failed Google Sheets save.
+                    **📌 Example Workflow (Find and Save):**
 
-                        Here's the general pattern for agent instruction:
+                    **Q:** "List all failed calls in the last 7 days and save them."
+                    1. Identify `call_logs_sample` collection.
+                    2. Get schema (confirm `call_status`, `call_time`).
+                    3. Construct filter: `{"call_status": "failed", "call_time": {"$gte": <7_days_ago>}}`
+                    4. **Execute `FindDocumentsTool`** with the filter. Assume it returns a list: `failed_calls_list = [{'agent': 'A', ...}, {'agent': 'B', ...}]`
+                    5. **Immediately execute `save_list_to_csv`**, **passing the list from step 4**: `save_list_to_csv(data=failed_calls_list)` (no filename specified by user). Assume it returns the string: `"Successfully generated CSV data (15 records) named 'output_20240401_180000.csv'. The user can now download it."`
+                    6. **Final Output to User:**
+                    ```
+                    **Query Executed (Find):**
+                    ```json
+                    {
+                        "call_status": "failed",
+                        "call_time": {"$gte": "2025-03-25"}
+                    }
+                    ```
 
-
-                    **📌 Example Workflows:**
-
-                    **Q:** "How many calls did Priya Sharma make this week?"
-                    - Identify `calls` collection.
-                    - Retrieve schema (ensure `caller`, `timestamp` fields exist).
-                    - Construct query: `{"caller": "Priya Sharma", "timestamp": {"$gte": <7_days_ago>}}`
-                    - Execute using `CountDocumentsTool`
-                    - Output:   query:{
-                                    "caller": "Priya Sharma",
-                                    "timestamp": {"$gte": <7_days_ago>}}`
-                                final output:`"Priya Sharma made 12 calls this week."`
-
-                    **Q:** "List all failed calls in the last 7 days."
-                    - Identify `calls` collection.
-                    - Retrieve schema (ensure `status`, `timestamp` fields exist).
-                    - Construct query: `{"status": "failed", "timestamp": {"$gte": <7_days_ago>}}`
-                    - Do not use limit in the query unless specified in the question.
-                    - Execute using `FindDocumentsTool`
-                    - Show the tabulat formate of data as well as an output
-                    - Output:  query:`{
-                                "status": "failed",
-                                "timestamp": {"$gte": <7_days_ago>}
-                                }`
-                               final output:`[{caller, receiver, timestamp}, ...]` and convert the str output from the list collections and save it in google sheet with each document in each row of google sheet or if it fails save as pandas dataframe
-                               for that use pandas.Dataframe(data) and show the dataframe
-
-                    **Q:** "What is the average call duration for completed calls?"
-                    - Identify `calls` collection.
-                    - Retrieve schema (ensure `duration`, `status` fields exist).
-                    - Construct aggregation: `[{"$match": {"status": "completed"}}, {"$group": {"_id": None, "avg_duration": {"$avg": "$duration"}}}]`
-                    - Execute using `AggregateDocumentsTool`
-                    - Output: query: `[
-                                        {"$match": {"status": "completed"}},
-                                        {"$group": {"_id": None, "avg_duration": {"$avg": "$duration"}}}
-                                        ]`
-                              final output: `"The average call duration is 45.23 seconds."`
+                    **Result:**
+                    Successfully generated CSV data (15 records) named 'output_20240401_180000.csv'. The user can now download it.
+                    ```
 
                     ---
                     Always ensure that the queries align with the **actual schema** of the collection.
-
                 """,
                 show_tool_calls=True,
                 add_datetime_to_instructions=True,
@@ -331,113 +312,138 @@ if prompt := st.chat_input("Ask me anything about your data"):
         st.markdown(prompt)
 
     # Agent response
-
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
-        full_response = ""
         agent = run_agent()
-        # Generate response with error handling
-        # --- IMPORTANT: Clear previous download state BEFORE running agent ---
-        # Ensures no stale button appears if the current run doesn't generate a file
+
+        # Clear previous download state
         if 'last_csv_download' in st.session_state:
             del st.session_state['last_csv_download']
 
-        # Generate response with error handling
+        # Initialize variables for usage and cost
         result = None
         agent_ran_successfully = False
-        with st.spinner("Analyzing your question..."):
+        prompt_tokens = 0
+        completion_tokens = 0
+        total_tokens = 0
+        estimated_cost = 0.0
+
+        with st.spinner("Analyzing your question and fetching data..."):
             try:
-                result = agent.run(prompt) # This might take time
+                result = agent.run(prompt)
                 agent_ran_successfully = True
+                print("Agent RunResponse:", result) # Add print statement for debugging
+
+                # --- Extract Token Usage ---
+                # Try extracting from the metrics of the LAST message first
+                if (result and hasattr(result, 'messages') and result.messages and
+                    hasattr(result.messages[-1], 'metrics') and result.messages[-1].metrics):
+
+                    last_msg_metrics = result.messages[-1].metrics
+                    # Use attribute access assuming it's an object like MessageMetrics
+                    prompt_tokens = getattr(last_msg_metrics, 'prompt_tokens', 0)
+                    completion_tokens = getattr(last_msg_metrics, 'completion_tokens', 0)
+                    total_tokens = getattr(last_msg_metrics, 'total_tokens', prompt_tokens + completion_tokens)
+
+                    # If total_tokens is still 0, maybe prompt/completion weren't set correctly, try total directly
+                    if total_tokens == 0 and hasattr(last_msg_metrics, 'total_tokens'):
+                         total_tokens = getattr(last_msg_metrics, 'total_tokens', 0)
+                         # Cannot accurately split into prompt/completion if only total is available here
+
+                # --- Fallback: Try extracting from top-level 'metrics' dictionary ---
+                elif (result and hasattr(result, 'metrics') and isinstance(result.metrics, dict)):
+                     metrics_dict = result.metrics
+                     if ('prompt_tokens' in metrics_dict and isinstance(metrics_dict['prompt_tokens'], list) and metrics_dict['prompt_tokens']):
+                         prompt_tokens = metrics_dict['prompt_tokens'][-1]
+                     if ('completion_tokens' in metrics_dict and isinstance(metrics_dict['completion_tokens'], list) and metrics_dict['completion_tokens']):
+                         completion_tokens = metrics_dict['completion_tokens'][-1]
+                     if ('total_tokens' in metrics_dict and isinstance(metrics_dict['total_tokens'], list) and metrics_dict['total_tokens']):
+                         total_tokens = metrics_dict['total_tokens'][-1]
+                     else:
+                          total_tokens = prompt_tokens + completion_tokens # Calculate if not present
+
+
+                # --- Calculate Estimated Cost ---
+                if total_tokens > 0 and PRIMARY_MODEL_ID_FOR_COST in MODEL_PRICING_PER_MILLION_TOKENS:
+                    pricing = MODEL_PRICING_PER_MILLION_TOKENS[PRIMARY_MODEL_ID_FOR_COST]
+                    # Ensure we have valid numbers before calculation
+                    prompt_tokens_calc = prompt_tokens if isinstance(prompt_tokens, (int, float)) else 0
+                    completion_tokens_calc = completion_tokens if isinstance(completion_tokens, (int, float)) else 0
+
+                    input_cost = (prompt_tokens_calc / 1_000_000) * pricing.get('input', 0)
+                    output_cost = (completion_tokens_calc / 1_000_000) * pricing.get('output', 0)
+                    estimated_cost = input_cost + output_cost
+                elif total_tokens > 0:
+                     st.warning(f"Pricing not found for primary model '{PRIMARY_MODEL_ID_FOR_COST}'. Cost cannot be estimated accurately.")
+
+
             except Exception as e:
-                st.error(f"An error occurred while running the agent: {e}")
-                # Optionally log the full traceback for debugging
+                st.error(f"An error occurred while running the agent or processing results: {e}")
                 import traceback
                 st.error(f"Traceback: {traceback.format_exc()}")
 
-        # Option 1: Get the formatted string representation of each tool call
-        formatted_calls = result.formatted_tool_calls
-        print("Formatted Tool Calls:")
-        for call in formatted_calls:
-            print(f"- {call}")
-        # Option 2: Get the names of the tools executed
-        # This approach extracts the unique names of the tools that were invoked.
-        tool_interactions = result.tools
-        tool_names_used = set() # Use a set to store unique names
-        if tool_interactions:
-            for interaction in tool_interactions:
-                tool_names_used.add(interaction.get('tool_name')) # Safely get tool_name
-        print("\nUnique Tool Names Used:")
-        if tool_names_used:
-            for name in tool_names_used:
-                print(f"- {name}")
-        else:
-            print("- No tools were used.")
-        # Option 3: Get detailed information for each tool interaction
-        print("\nDetailed Tool Interactions:")
-        if tool_interactions:
-            for i, interaction in enumerate(tool_interactions):
-                print(f"Interaction {i+1}:")
-                print(f"  Name: {interaction.get('tool_name')}")
-                print(f"  Args: {interaction.get('tool_args')}")
-                # print(f"  Result: {interaction.get('content')}") # Result can be long, print if needed
-                print("-" * 10)
-        else:
-            print("- No tool interactions occurred.")
-        # --- START: Display Tool Interactions ---
+
+        # --- Display Results, Download Button, and Usage Info ---
         if agent_ran_successfully and result:
+            # Display Tool Interactions (Optional Expander)
+            # ... (tool display code remains the same) ...
+            if result.tools:
+                 with st.expander("🔍 Show Tool Interactions"):
+                      st.markdown("---") # Start of tool interactions display
+                      for i, interaction in enumerate(result.tools):
+                           tool_name = interaction.get('tool_name', 'N/A')
+                           tool_args = interaction.get('tool_args', {})
+                           tool_content_str = str(interaction.get('content', 'N/A')) # Content is now string
 
-            if result.tools: # Check if any tools were used
-                with st.expander("🔍 Show Tool Interactions"):
-                    st.markdown("---") # Separator
-                    for i, interaction in enumerate(result.tools):
-                        tool_name = interaction.get('tool_name', 'N/A')
-                        tool_args = interaction.get('tool_args', {})
+                           try:
+                                args_str = json.dumps(tool_args, indent=2)
+                           except TypeError:
+                                args_str = str(tool_args)
 
-                        # Format arguments nicely (convert dict to formatted string)
-                        import json
-                        try:
-                            args_str = json.dumps(tool_args, indent=2)
-                        except TypeError: # Handle non-serializable args if necessary
-                            args_str = str(tool_args)
+                           st.markdown(f"**Interaction {i+1}: {tool_name}**")
+                           st.code(args_str, language='json')
+                           st.write("**Result (Sent to LLM):**")
+                           st.caption(tool_content_str) # Display the string result
+                           st.markdown("---") # Separator between interactions
 
-                        st.markdown(f"**Interaction {i+1}: {tool_name}**")
-                        st.code(args_str, language='json')
-                        st.write("**Result (Sent to LLM):**")
-                        # st.caption(tool_content_str) # Display the string result
-                        st.markdown("---")
+
             # Display Main Assistant Response
             assistant_response_content = result.content if result.content else "I couldn't generate a response based on the tool interactions."
             st.markdown(assistant_response_content)
 
-            # Store Message *before* adding the download button
+            # Store Message
             current_message = {"role": "assistant", "content": assistant_response_content}
             st.session_state.messages.append(current_message)
 
-            # --- Check session_state for CSV Download Button AFTER agent run ---
-            if 'last_csv_download' in st.session_state:
-                download_info = st.session_state['last_csv_download']
-                try:
-                    st.download_button(
-                        label=f"📥 Download {download_info['filename']}",
-                        data=download_info['csv_content'].encode('utf-8'), # Encode string to bytes
-                        file_name=download_info['filename'],
-                        mime='text/csv',
-                        # Use a more robust key if needed, combining filename and timestamp or message index
-                        key=f"download_{download_info['filename']}_{len(st.session_state.messages)}"
-                    )
-                    # Optional: Add download info to the stored message for potential re-rendering later
-                    # current_message['download_info'] = download_info
-                except KeyError as ke:
-                    st.error(f"Failed to create download button. Missing data: {ke}")
-                except Exception as btn_e:
-                    st.error(f"Error creating download button: {btn_e}")
 
-                # Decide whether to clear 'last_csv_download' here or rely on the clear at the start of the next turn.
-                # Clearing at the start is generally safer.
+            # Check session_state for CSV Download Button
+            # ... (download button code remains the same) ...
+            if 'last_csv_download' in st.session_state:
+                 download_info = st.session_state['last_csv_download']
+                 try:
+                     st.download_button(
+                         label=f"📥 Download {download_info['filename']}",
+                         data=download_info['csv_content'].encode('utf-8'),
+                         file_name=download_info['filename'],
+                         mime='text/csv',
+                         key=f"download_{download_info['filename']}_{len(st.session_state.messages)}"
+                     )
+                 except Exception as btn_e:
+                      st.error(f"Error creating download button: {btn_e}")
+
+
+            # --- Display Token Usage and Cost ---
+            if total_tokens > 0:
+                cost_string = f"${estimated_cost:.6f}" # Format cost
+                # Display the extracted token counts
+                usage_info = f"Tokens Used: {prompt_tokens} Prompt + {completion_tokens} Completion = {total_tokens} Total | Estimated Cost: {cost_string} (based on {PRIMARY_MODEL_ID_FOR_COST})"
+                st.caption(usage_info)
+            elif agent_ran_successfully: # Only show 'not available' if agent ran but no tokens found
+                st.caption("Token usage information not available for this run.")
+
 
         elif not agent_ran_successfully:
             # Handle case where agent.run() itself failed
-                error_message = "Sorry, I encountered an error and couldn't process your request."
-                st.markdown(error_message)
-                st.session_state.messages.append({"role": "assistant", "content": error_message})
+             error_message = "Sorry, I encountered an error and couldn't process your request."
+             st.markdown(error_message)
+             st.session_state.messages.append({"role": "assistant", "content": error_message})
