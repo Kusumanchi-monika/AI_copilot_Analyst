@@ -12,13 +12,18 @@ def update_env_file(key, value):
     set_key(".env", key, value)
     os.environ[key] = value
 
-# Input fields for environment variables
-openai_api_key = st.text_input("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY") or "")
-mongodb_uri = st.text_input("uri", os.getenv("uri") or "")
-sheet_id = st.text_input("sheet_id", os.getenv("sheet_id") or "")
+# Input fields for environment variables (masked)
+openai_api_key = st.text_input("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY") or "", type="password")
+mongodb_uri = st.text_input("uri", os.getenv("uri") or "", type="password")
+sheet_id = st.text_input("sheet_id", os.getenv("sheet_id") or "", type="password")
 
-# Text area for service account JSON
-direct_json_input = st.text_area("Service Account JSON", "")
+# Toggle for showing/hiding JSON input
+show_json = st.checkbox("Show Service Account JSON")
+
+if show_json:
+    direct_json_input = st.text_area("Service Account JSON", "")
+else:
+    direct_json_input = st.text_input("Service Account JSON (Hidden)", "", type="password")
 
 if st.button("Save Settings"):
     update_env_file("OPENAI_API_KEY", openai_api_key)

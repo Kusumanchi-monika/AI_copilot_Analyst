@@ -48,13 +48,6 @@ def run_agent():
 
     uri = os.getenv("uri")
     credentials_path = "credentials.json"
-    # DROPBOX_URL = credentials_path
-    # LOCAL_CREDENTIALS_PATH = "/tmp/credentials.json"  # Temporary location
-
-    # # Download the credentials file from Dropbox
-    # response = requests.get(DROPBOX_URL)
-    # with open(LOCAL_CREDENTIALS_PATH, "wb") as f:
-    #     f.write(response.content)
     sheet_id =  os.getenv("sheet_id")
     client = MongoClient(uri)
 
