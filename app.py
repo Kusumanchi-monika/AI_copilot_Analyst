@@ -37,13 +37,128 @@ from agno.agent import Agent, RunResponse
 from agno.models.openai import OpenAIChat
 from agno.tools.pandas import PandasTools
 from agno.models.groq import Groq
-from tools.tools import MongoDBUtility, Googletoolkit
+from tools.tools import MongoDBUtility
 import streamlit as st
 import requests
 
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+
+import streamlit as st # Make sure streamlit is imported here
+import csv
+import json
+from io import StringIO
+from datetime import datetime
+from typing import List, Dict, Any, Optional
+
+# Assuming ObjectId might be present from MongoDB results
+try:
+    from bson import ObjectId
+except ImportError:
+    ObjectId = type(None)
+
+# No longer need TypedDict for return type, as it returns str
+# class CsvSaveResult(TypedDict): ... # Remove this
+
+def save_list_to_csv(
+    data: List[Dict[str, Any]],
+    output_filename: Optional[str] = None
+) -> str: # <--- Changed return type hint to str
+    """
+    Generates CSV content from a list of dictionaries, stores it in
+    st.session_state['last_csv_download'] for frontend download,
+    and returns only a confirmation message string suitable for the LLM.
+
+    Args:
+        data (List[Dict[str, Any]]): List of data records to convert.
+        output_filename (Optional[str]): Desired output filename. Generated if None.
+
+    Returns:
+        str: A confirmation or error message string.
+    """
+    # --- Clear any previous download state ---
+    if 'last_csv_download' in st.session_state:
+        try:
+            del st.session_state['last_csv_download']
+        except Exception: # Handle potential errors if deletion fails unexpectedly
+             pass # Log this if needed
+
+    if not data:
+        return "Error: No data provided to generate CSV." # Return simple string
+
+    # --- Generate filename ---
+    is_generated_filename = False
+    if not output_filename:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"output_{timestamp}.csv"
+        is_generated_filename = True
+    elif not output_filename.lower().endswith('.csv'):
+        output_filename += '.csv'
+
+    csv_content_string = None
+    message_for_llm = f"Error: Could not generate CSV for {output_filename}." # Default error
+
+    try:
+        # --- Data Preprocessing ---
+        processed_data = []
+        all_keys = set()
+        for row_dict in data:
+            processed_row = {}
+            for k, v in row_dict.items():
+                key_str = str(k)
+                all_keys.add(key_str)
+                if isinstance(v, (ObjectId, datetime)):
+                    processed_row[key_str] = str(v)
+                elif isinstance(v, (dict, list)):
+                    processed_row[key_str] = json.dumps(v) # Ensure complex types are stringified
+                elif v is None:
+                    processed_row[key_str] = "" # Represent None as empty string in CSV
+                else:
+                    processed_row[key_str] = v
+            processed_data.append(processed_row)
+
+        # Determine fieldnames consistently
+        if not all_keys and processed_data: # Handle case where first row might dictate keys
+             all_keys = set(processed_data[0].keys())
+        fieldnames = sorted(list(all_keys))
+
+
+        # --- Generate CSV String using StringIO ---
+        string_io = StringIO()
+        # Use quoting=csv.QUOTE_MINIMAL or csv.QUOTE_NONNUMERIC based on needs
+        writer = csv.DictWriter(string_io, fieldnames=fieldnames, extrasaction='ignore', quoting=csv.QUOTE_MINIMAL)
+        writer.writeheader()
+        writer.writerows(processed_data)
+        csv_content_string = string_io.getvalue()
+        string_io.close()
+
+        # --- Prepare success message and store data ---
+        message_for_llm = f"Successfully generated CSV data ({len(data)} records) named '{output_filename}'. The user can now download it."
+        if is_generated_filename:
+             message_for_llm += " (Filename was auto-generated)"
+
+        # --- Store details in session_state for Streamlit frontend ---
+        st.session_state['last_csv_download'] = {
+            "filename": output_filename,
+            "csv_content": csv_content_string,
+            "message": message_for_llm # Store the message too, might be useful for context
+        }
+
+        return message_for_llm # <--- Return ONLY the confirmation string
+
+    except Exception as e:
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error during CSV generation: {e}\n{error_details}") # Log detailed error
+        message_for_llm = f"Error generating CSV data for {output_filename}: {e}"
+        # Ensure state is cleared on error
+        if 'last_csv_download' in st.session_state:
+            try:
+                del st.session_state['last_csv_download']
+            except Exception:
+                pass
+        return message_for_llm # <--- Return only the error string
 
 # from pydantic import BaseModel
 # from typing import Any, Dict, List, Optional, Union
@@ -55,15 +170,16 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 def run_agent():
 
     uri = os.getenv("uri")
-    credentials_path = "credentials.json"
     sheet_id =  os.getenv("sheet_id")
     client = MongoClient(uri)
 
     agent = Agent(
             model= OpenAIChat(id="gpt-4o",temperature=0),
+            # model=Claude(id="claude-3-7-sonnet-20250219", temperature=0),
+
             reasoning_model=Groq(id="deepseek-r1-distill-llama-70b", temperature=0),
 
-            tools = [MongoDBUtility(),ThinkingTools(),Googletoolkit(credentials_path, sheet_id),PandasTools()],
+            tools = [MongoDBUtility(),ThinkingTools(),PandasTools(), save_list_to_csv],
             instructions="""
                     You are an intelligent MongoDB assistant that dynamically constructs and executes queries based on user input. Follow these steps:
                     You are a MongoDB assistant that **must** execute the query using the appropriate tools.
@@ -85,19 +201,29 @@ def run_agent():
 
                     4️ **Execute the Query:**
                     - If the query is a **count operation**, use `CountDocumentsTool`.
-                    - If retrieving multiple documents, use `FindDocumentsTool`.
+                    - If retrieving multiple documents, use `FindDocumentsTool`and save in csv file using the tool `save_list_to_csv` ".
                     - For summary statistics (e.g., average duration), use `AggregateDocumentsTool`.
+                
 
-                    5️ **Return a Clear and Concise Response:**
+                    4.5 **Save Results if  the user says list the records or what are the records or Listing/Saving Records:**
+                        - **If** the user's request implies listing or saving multiple records **and** you just used `FindDocumentsTool` which returned a list of documents (let's call this list `retrieved_data`):
+                            - **Determine the desired format:** Default to CSV unless the user explicitly asks for JSON (if you have a JSON save tool).
+                            - **Determine the filename:** If the user suggests a filename (e.g., "save it as failed_emails.csv"), use that. Otherwise, do not provide a filename to the tool (let it generate one).
+                            - **If saving as CSV:**
+                                - **Call the `save_list_to_csv` tool.**
+                -                - Pass the `retrieved_data` (the actual Python list object from `FindDocumentsTool`) to the `data_to_save` argument.
+                +                - Pass the `retrieved_data` (the actual Python list object from `FindDocumentsTool`) to the `data` argument.
+                                - If a specific filename was requested by the user, pass it to the `output_filename` argument. Otherwise, pass nothing for `output_filename`.
+                            # - (Add similar logic here if you also have a JSON saving tool)
+                            - **Crucially: Do not convert the `retrieved_data` list to a string** before passing it to the saving tool.
+
+                5️ **Return a Clear and Concise Response:**
                     - Show the query that you execuited in the mongodb database
-                    - Format the output in readable JSON or tabular format.
+            -        - **If you saved data to a file (CSV or JSON), clearly state the filename and format** in your response, using the confirmation message returned by the saving tool.
+            +        - **If data was saved to a file, include the exact confirmation message returned by the saving tool** (e.g., "Successfully saved X records to Y.csv") in your final response to the user.
+                    - Format the output in readable JSON or tabular format for the user's view.
                     - Provide a **brief explanation** of the result.
-                    - If no results are found, state it clearly.
-                    - If `final_output` is a **list of dictionaries (documents)**, create an additional `dataframe` field:
-                        - Convert the list to a Pandas DataFrame.
-                        - Store the **string representation** of the DataFrame in the `dataframe` field.
-                    - **Parse the string output** of the `FindDocumentsTool` and convert to list of dictionaries and save in google sheet where each document as row into Google Sheets.
-                    - save to google sheets if the question is to get the records form the mongodb database
+
 
                     ---
                     3. **Error Handling and Fallback:**
@@ -106,22 +232,6 @@ def run_agent():
 
                         Here's the general pattern for agent instruction:
 
-                        ```
-                        If the query requires retrieving records, parse it using json.loads.  Then, attempt to save the data to Google Sheets.  If saving to Google Sheets results in an error or an empty response, *immediately* convert the data into a Pandas DataFrame and output the DataFrame.
-                        ```
-
-                        4.  **Google Sheets API Permissions:**
-                        -   **Problem:** Incorrect or missing permissions on the service account used by `gspread`.
-                        -   **Solution:**
-
-                            *   **Check the Credentials:**  Ensure the `credentials.json` file is valid and contains the correct service account credentials.
-                            *   **Verify Sheet Sharing:**  The service account's email address MUST be explicitly granted "Editor" access to the Google Sheet. Sharing the sheet with your personal Google account is NOT sufficient.
-
-                        5.  **Formate data problem:**
-                            If the query requires retrieving records, parse it using json.loads.  Then, attempt to save the data to Google Sheets.  If saving to Google Sheets results in an error or an empty response, *immediately* convert the data into a Pandas DataFrame and output the DataFrame.
-                            If the query requires retrieving records (using `FindDocumentsTool`), attempt to save the **Python list of dictionaries** directly to Google Sheets (as described in step 5). If the `save_to_google_sheets` tool returns an error or an empty/failure response, *then* convert the original **Python list of dictionaries** into a Pandas DataFrame and output the DataFrame representation in your final response.
-    ```
-                        **Complete Example with Error Handling**
 
                     **📌 Example Workflows:**
 
@@ -227,9 +337,23 @@ if prompt := st.chat_input("Ask me anything about your data"):
         full_response = ""
         agent = run_agent()
         # Generate response with error handling
-        with st.spinner("Analyzing your question..."):
-            result = agent.run(prompt)
+        # --- IMPORTANT: Clear previous download state BEFORE running agent ---
+        # Ensures no stale button appears if the current run doesn't generate a file
+        if 'last_csv_download' in st.session_state:
+            del st.session_state['last_csv_download']
 
+        # Generate response with error handling
+        result = None
+        agent_ran_successfully = False
+        with st.spinner("Analyzing your question..."):
+            try:
+                result = agent.run(prompt) # This might take time
+                agent_ran_successfully = True
+            except Exception as e:
+                st.error(f"An error occurred while running the agent: {e}")
+                # Optionally log the full traceback for debugging
+                import traceback
+                st.error(f"Traceback: {traceback.format_exc()}")
 
         # Option 1: Get the formatted string representation of each tool call
         formatted_calls = result.formatted_tool_calls
@@ -261,29 +385,59 @@ if prompt := st.chat_input("Ask me anything about your data"):
         else:
             print("- No tool interactions occurred.")
         # --- START: Display Tool Interactions ---
-        if result.tools: # Check if any tools were used
-            with st.expander("🔍 Show Tool Interactions"):
-                st.markdown("---") # Separator
-                for i, interaction in enumerate(result.tools):
-                    tool_name = interaction.get('tool_name', 'N/A')
-                    tool_args = interaction.get('tool_args', {})
+        if agent_ran_successfully and result:
 
-                    # Format arguments nicely (convert dict to formatted string)
-                    import json
-                    try:
-                        args_str = json.dumps(tool_args, indent=2)
-                    except TypeError: # Handle non-serializable args if necessary
-                        args_str = str(tool_args)
+            if result.tools: # Check if any tools were used
+                with st.expander("🔍 Show Tool Interactions"):
+                    st.markdown("---") # Separator
+                    for i, interaction in enumerate(result.tools):
+                        tool_name = interaction.get('tool_name', 'N/A')
+                        tool_args = interaction.get('tool_args', {})
 
-                    st.markdown(f"**Interaction {i+1}: {tool_name}**")
-                    st.code(args_str, language='json')
-                    st.markdown("---") # Separator between interactions
-        print(result)
-        # Display assistant response
-        st.markdown(result.content)
-        
-        st.session_state.messages.append({"role": "assistant", "content":result.content })
+                        # Format arguments nicely (convert dict to formatted string)
+                        import json
+                        try:
+                            args_str = json.dumps(tool_args, indent=2)
+                        except TypeError: # Handle non-serializable args if necessary
+                            args_str = str(tool_args)
 
+                        st.markdown(f"**Interaction {i+1}: {tool_name}**")
+                        st.code(args_str, language='json')
+                        st.write("**Result (Sent to LLM):**")
+                        # st.caption(tool_content_str) # Display the string result
+                        st.markdown("---")
+            # Display Main Assistant Response
+            assistant_response_content = result.content if result.content else "I couldn't generate a response based on the tool interactions."
+            st.markdown(assistant_response_content)
 
+            # Store Message *before* adding the download button
+            current_message = {"role": "assistant", "content": assistant_response_content}
+            st.session_state.messages.append(current_message)
 
+            # --- Check session_state for CSV Download Button AFTER agent run ---
+            if 'last_csv_download' in st.session_state:
+                download_info = st.session_state['last_csv_download']
+                try:
+                    st.download_button(
+                        label=f"📥 Download {download_info['filename']}",
+                        data=download_info['csv_content'].encode('utf-8'), # Encode string to bytes
+                        file_name=download_info['filename'],
+                        mime='text/csv',
+                        # Use a more robust key if needed, combining filename and timestamp or message index
+                        key=f"download_{download_info['filename']}_{len(st.session_state.messages)}"
+                    )
+                    # Optional: Add download info to the stored message for potential re-rendering later
+                    # current_message['download_info'] = download_info
+                except KeyError as ke:
+                    st.error(f"Failed to create download button. Missing data: {ke}")
+                except Exception as btn_e:
+                    st.error(f"Error creating download button: {btn_e}")
 
+                # Decide whether to clear 'last_csv_download' here or rely on the clear at the start of the next turn.
+                # Clearing at the start is generally safer.
+
+        elif not agent_ran_successfully:
+            # Handle case where agent.run() itself failed
+                error_message = "Sorry, I encountered an error and couldn't process your request."
+                st.markdown(error_message)
+                st.session_state.messages.append({"role": "assistant", "content": error_message})
