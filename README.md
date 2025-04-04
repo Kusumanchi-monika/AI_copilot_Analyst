@@ -106,6 +106,6 @@ Ensure your virtual environment is activated. Run the Streamlit app from your te
 ```bash
 streamlit run app.py
 
-
+```
 [streamlit-app-2025-04-01-23-04-10.webm](https://github.com/user-attachments/assets/c93808bb-9005-4d3f-a6ef-e8602c97ea95)
 
